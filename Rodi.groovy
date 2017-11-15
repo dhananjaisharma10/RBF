@@ -330,9 +330,9 @@ class Rodi extends UnetAgent
                     println("ROUTE DELETED")
                 }
             }
-                //  Do another Route Discovery.
-                def rdp = agentForService(Services.ROUTE_MAINTENANCE)
-                rdp << new RouteDiscoveryReq(to: msg.to, maxHops: 50, count: 1)
+            //  Do another Route Discovery.
+            def rdp = agentForService(Services.ROUTE_MAINTENANCE)
+            rdp << new RouteDiscoveryReq(to: msg.to, maxHops: 50, count: 1)
         }
 
         // DATA Packets.
