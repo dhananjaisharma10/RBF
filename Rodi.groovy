@@ -246,7 +246,6 @@ class Rodi extends UnetAgent
                 }
             }
 
-            //  2) RT is not empty.
             /*  If my RT has some entries, check for destination first:
             *   1) If found, send a notification;
             *   2) If not, do a Route discovery if the number of re-transmissions permits.
