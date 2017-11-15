@@ -10,11 +10,12 @@ class Csma extends UnetAgent
 
   private int myAddr
 
-  private final static int MAX_BACKOFF_SLOTS = 29
+  private final static int MAX_BACKOFF_SLOTS = 13
   private final static int MIN_BACKOFF_SLOTS = 3
   private final static int MAX_RETRY_COUNT   = 10
 
-  private final static float BACKOFF_RANDOM = 3.seconds
+  private final static float BACKOFF_RANDOM = 2.seconds
+  private final static float MAX_PROP_DELAY = 70.milliseconds
 
   private final static int MAX_QUEUE_LEN = 16
 
@@ -25,7 +26,7 @@ class Csma extends UnetAgent
   }
 
   private enum Event {
-    RESERVATION_REQ, RX_CTRL, RX_DATA, SNOOP_CTRL, SNOOP_DATA
+    RX_CTRL, RX_DATA, SNOOP_CTRL, SNOOP_DATA
   }
     
   private FSMBehavior fsm = FSMBuilder.build
@@ -58,22 +59,32 @@ class Csma extends UnetAgent
       }
 
       onEvent(Event.RX_CTRL) {
-        backoff = backoff - currentTimeMillis() + controlMsgDuration
+        backoff = controlMsgDuration
         reenterState()
       }
 
       onEvent(Event.SNOOP_CTRL) {
-        backoff = backoff - currentTimeMillis() + controlMsgDuration + 300
+        backoff = controlMsgDuration + 2*MAX_PROP_DELAY // additional buffer time.
         reenterState()
       }
 
       onEvent(Event.RX_DATA) {
-        backoff = backoff - currentTimeMillis() + dataMsgDuration
+        backoff = dataMsgDuration
         reenterState()
       }
 
       onEvent(Event.SNOOP_DATA) {
-        backoff = backoff - currentTimeMillis() + dataMsgDuration + 1000
+        backoff = dataMsgDuration + 2*MAX_PROP_DELAY    // additional buffer time.
+        reenterState()
+      }
+
+      onEvent(Event.RX_ACK) {
+        backoff = 13.5
+        reenterState()
+      }
+
+      onEvent(Event.SNOOP_ACK) {
+        backoff = 13.5 + 2*MAX_PROP_DELAY               // additional buffer time.
         reenterState()
       }
     }
@@ -89,7 +100,7 @@ class Csma extends UnetAgent
           else if (retryCount < MAX_RETRY_COUNT) {
             retryCount++
             Message msg = queue.peek()
-            backoff = getNumberofSlots(retryCount)*msg.duration*1000
+            backoff = getNumberofSlots(msg)*1000
             setNextState(State.BACKOFF)
           }
         }
@@ -107,16 +118,10 @@ class Csma extends UnetAgent
       }
     }
   }
-
-  private int getNumberofSlots(int slots)
+    // ExponentialBackoff
+  private int getNumberofSlots(Message msg)
   {
-    int product = 1
-    while(slots > 0) {
-      product = product*2   // exponential backoff
-      slots--
-    }
-    return AgentLocalRandom.current().nextInt(product)
-    //return AgentLocalRandom.current().nextInt(MAX_BACKOFF_SLOTS) + MIN_BACKOFF_SLOTS
+    return AgentLocalRandom.current().nextExp(targetLoad/msg.duration)
   }
 
   @Override
@@ -164,14 +169,22 @@ class Csma extends UnetAgent
   {
     if (msg instanceof RxFrameNtf)
     {
-      if (msg.type == Physical.CONTROL)
+      if (msg.type == Physical.CONTROL && msg.protocol == Protocol.ROUTING)
       {
         fsm.trigger(msg.to == myAddr ? Event.RX_CTRL : Event.SNOOP_CTRL)
+      }
+      if (msg.type == Physical.CONTROL && msg.protocol == Protocol.USER)
+      {
+        fsm.trigger(msg.to == myAddr ? Event.RX_ACK : Event.SNOOP_ACK)
       }
       if (msg.type == Physical.DATA)
       {
         fsm.trigger(msg.to == myAddr ? Event.RX_DATA : Event.SNOOP_DATA)
       }
+    }
+    if (msg instanceof RouteDiscoveryNtf && msg.reliability == true)  // extends the backoff.
+    {
+      fsm.trigger(msg.to == myAddr ? Event.RX_DATA : Event.SNOOP_DATA)
     }
   }
 
@@ -205,5 +218,6 @@ class Csma extends UnetAgent
 
   int controlMsgDuration
   int dataMsgDuration
+  double targetLoad
 
 }

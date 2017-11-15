@@ -43,9 +43,9 @@ class Rodi extends UnetAgent
     // PDU for DATA and ACK packets.
     private final static PDU dataMsg = PDU.withFormat
     {
-        uint8('src')
-        uint8('dst')
-        uint16('store')
+        uint8('source')
+        uint8('destination')
+        uint16('dataPktId')
     }
 
     private AgentID phy, node, rtr, mac
@@ -54,35 +54,22 @@ class Rodi extends UnetAgent
 
     private final static int RREQ = 0x01
     private final static int RREP = 0x02
+    private final static int RIDZ = 0
 
-    // CSMA parameters.
-    private final static int MAX_BACKOFF_SLOTS  = 29
-    private final static int MIN_BACKOFF_SLOTS  = 3
-    private final static int MAX_RETRY_ATTEMPTS = 10
-
-    // The number of Route Discovery attempts (number of re-transmissions + 1) for a particular node.
-    private final static int MAX_TRANSMISSIONS = 5
-
-    private final static int RIDZ  = 0
-    private final static int SPEED = 1500
-    private final static int RANGE = 100
+    private final static int MAX_TRANSMISSIONS = 4  // 1 + re-transmissions
 
     private final static long BACKOFF_RANDOM = 5000
 
-    // in ms
-    private int hoptime = 1000*(RANGE/SPEED)
+    ArrayList<Rodi.RoutingInformation> myroutingTable  = new ArrayList<Rodi.RoutingInformation>()   //routing table
+    ArrayList<Rodi.PacketHistory> mypacketHistoryTable = new ArrayList<Rodi.PacketHistory>()        //packet history table
+    ArrayList<Rodi.Attempt> attempting                 = new ArrayList<Rodi.Attempt>()              //re-tx attempts
+    ArrayList<Rodi.TxReserve> reservationTable         = new ArrayList<Rodi.TxReserve>()            //packets for MAC
 
-    ArrayList<Rodi.RoutingInformation>  myroutingTable = new ArrayList<Rodi.RoutingInformation>()      //routing table
-    ArrayList<Rodi.PacketHistory> mypacketHistoryTable = new ArrayList<Rodi.PacketHistory>()           //packet history table
-    ArrayList<Rodi.Attempt>                 attempting = new ArrayList<Rodi.Attempt>()
-    ArrayList<Rodi.TxReserve> reservationTable = new ArrayList<Rodi.TxReserve>()
+    private final static int ROUTING_PROTOCOL   = Protocol.ROUTING
+    private final static int DATA_PROTOCOL      = Protocol.DATA
+    private final static int ACK_PROTOCOL       = Protocol.USER
 
-    private final static int PING_PROTOCOL = Protocol.ROUTING
-    private final static int DATA_PROTOCOL = Protocol.DATA
-    private final static int ACK_PROTOCOL  = Protocol.USER
-
-    private int temp = 0        // Initial request ID number of a node. It is incremented with every route discovery request.
-    private packetreceived = 0
+    private int temp = 0    // Initial request ID of a node. Incremented with every route discovery request.
 
     @Override
     void setup()
@@ -120,11 +107,8 @@ class Rodi extends UnetAgent
 
         // Preparing the RREQ packet for broadcast.
         def bytes = pdu.encode(typeOfPacket: RREQ, requestIDValue: temp, destinationAddress: destination, sourceAddress: myAddr)
-        TxFrameReq tx = new TxFrameReq(to: Address.BROADCAST, type: Physical.CONTROL, protocol: PING_PROTOCOL, data: bytes)
-        ReservationReq rs = new ReservationReq(to: tx.to, duration: controlMsgDuration/1000)
-        TxReserve tr = new TxReserve(txreq: tx, resreq: rs)
-        reservationTable.add(tr)
-        mac << rs
+        TxFrameReq tx = new TxFrameReq(to: Address.BROADCAST, type: Physical.CONTROL, protocol: ROUTING_PROTOCOL, data: bytes)
+        sendMessage(tx)
     }
 
     // Receive the notification within one round trip time, otherwise send a new RDR.
@@ -164,20 +148,38 @@ class Rodi extends UnetAgent
     }
     */
 
-    // Called when the source node could not get the ACK back from the destination node.
-    private void routeMaintenance(int dest)
+    // Sending Reservation Requests to MAC protocol.
+    private void sendMessage(TxFrameReq txReq)
     {
-        for (int i = 0; i < myroutingTable.size(); i++)
+        if (txReq.type == Physical.CONTROL)    // CTRL packets.
         {
-            if (myroutingTable.get(i).destinationAddress == dest)
+            if (txReq.protocol == ROUTING_PROTOCOL)
             {
-                myroutingTable.remove(i)    // Remove the existing destination address entry.
-                break
+                ReservationReq rs = new ReservationReq(to: txReq.to, duration: controlMsgDuration/1000)
+                TxReserve tr = new TxReserve(txreq: txReq, resreq: rs)
+                reservationTable.add(tr)
+                mac << rs       // send ReservationRequest.
             }
+
+            if (txReq.protocol == ACK_PROTOCOL)
+            {   // duration for ACK packets with a 2400 bps rate.
+                ReservationReq rs = new ReservationReq(to: txReq.to, duration: 13.5/1000)
+                TxReserve tr = new TxReserve(txreq: txReq, resreq: rs)
+                reservationTable.add(tr)
+                mac << rs       // send ReservationRequest.
+            }
+        }
+
+        if (txReq.type == Physical.DATA)   // DATA packets.
+        {
+            ReservationReq rs = new ReservationReq(to: txReq.to, duration: dataMsgDuration/1000)
+            TxReserve tr = new TxReserve(txreq: txReq, resreq: rs)
+            reservationTable.add(tr)
+            mac << rs       // send ReservationRequest.
         }
     }
 
-    /*   0: Max no. of transmissions not yet reached, but the node has been searched before.
+    /*  0: Max no. of transmissions not yet reached, but the node has been searched before.
     *   1: Node is searching for the first time. Do a route discovery.
     *   2: Maximum number of transmissions reached for this node. Refuse the request.
     */
@@ -207,7 +209,7 @@ class Rodi extends UnetAgent
     {
         if (msg instanceof RouteDiscoveryReq)
         {
-            int fd = msg.getTo()    // Final Destination.
+            int fd = msg.to     // Final Destination.
 
             // 1) RT is empty.
             if (myroutingTable.size == 0)
@@ -244,10 +246,10 @@ class Rodi extends UnetAgent
                 }
             }
 
-            // 2) RT is not empty.
+            //  2) RT is not empty.
             /*  If my RT has some entries, check for destination first:
-                1) If found, send a notification;
-                2) If not, do a Route discovery if the number of re-transmissions permits.
+            *   1) If found, send a notification;
+            *   2) If not, do a Route discovery if the number of re-transmissions permits.
             */
             else
             {
@@ -255,8 +257,8 @@ class Rodi extends UnetAgent
                 {
                     if (myroutingTable.get(i).destinationAddress == fd) 
                     {
-                        int bill = myroutingTable.get(i).nh         // Next hop for the destination.
-                        rtr << new RouteDiscoveryNtf(to: fd, nextHop: bill, reliability: true)  // Sending the Route discovery notification.
+                        int biz = myroutingTable.get(i).nh         // Next hop for the destination.
+                        rtr << new RouteDiscoveryNtf(to: fd, nextHop: biz, reliability: true)   // Sending the Route discovery notification.
                         return new Message(msg, Performative.AGREE)
                     }
                 }
@@ -321,19 +323,32 @@ class Rodi extends UnetAgent
                 }
             }
         }
+        // The ROUTE has not returned ACK within NET_TRAVERSAL_TIME.
+        if (msg instanceof RouteDiscoveryNtf && msg.reliability == false)
+        {
+            // Delete the route for msg.to Destination.
+            for (int i = 0; i < myroutingTable.size(); i++) {
+                if (myroutingTable.get(i).destinationAddress == msg.to) {
+                    myroutingTable.remove(i)
+                    println("ROUTE DELETED")
+                }
+            }
+                //  Do another Route Discovery.
+                def rdp = agentForService(Services.ROUTE_MAINTENANCE)
+                rdp << new RouteDiscoveryReq(to: msg.to, maxHops: 50, count: 1)
+        }
 
         // DATA Packets.
         if (msg instanceof RxFrameNtf && msg.type == Physical.DATA && msg.protocol == DATA_PROTOCOL)
         {
             def recdata = dataMsg.decode(msg.data)
-            int os = recdata.src
-            int od = recdata.dst
-            int da = recdata.store
+            int os = recdata.source
+            int od = recdata.destination
+            int da = recdata.dataPktId
 
             if (myAddr == od)       // I am the final destination.
             {
-                println("RECEIVED!")
-                /*packetreceived++
+                println(myAddr+" DATA RECEIVED from "+os)
                 for (int i = 0; i < myroutingTable.size(); i++)
                 {
                     if (myroutingTable.get(i).destinationAddress == os)
@@ -341,16 +356,11 @@ class Rodi extends UnetAgent
                         int lo = myroutingTable.get(i).nh       // Next hop.
 
                         // Preparing the ACK packet.
-                        def bytes = dataMsg.encode([src: os, dst: od, store: da])
+                        def bytes = dataMsg.encode([source: os, destination: od, dataPktId: da])
                         TxFrameReq tx = new TxFrameReq(to: lo, type: Physical.CONTROL, protocol: ACK_PROTOCOL, data: bytes)
-                        ReservationReq rs = new ReservationReq(to: tx.to, duration: controlMsgDuration/1000)
-                        TxReserve tr = new TxReserve(txreq: tx, resreq: rs)
-                        reservationTable.add(tr)
-                        mac << rs
-                        //csmaMac(tx)
-                        return
+                        sendMessage(tx)
                     }
-                }*/
+                }
             }
 
             else                    // I am not the final destination for the DATA packet.
@@ -362,13 +372,9 @@ class Rodi extends UnetAgent
                         int go = myroutingTable.get(i).nh       // Next hop.
 
                         // Preparing the DATA packet.
-                        def bytes = dataMsg.encode([src: os, dst: od, store: da])
+                        def bytes = dataMsg.encode([source: os, destination: od, dataPktId: da])
                         TxFrameReq tx = new TxFrameReq(to: go, type: Physical.DATA, protocol: DATA_PROTOCOL, data: bytes)
-                        ReservationReq rs = new ReservationReq(to: tx.to, duration: dataMsgDuration/1000)
-                        TxReserve tr = new TxReserve(txreq: tx, resreq: rs)
-                        reservationTable.add(tr)
-                        mac << rs
-                        return
+                        sendMessage(tx)
                     }
                 }
             }
@@ -378,16 +384,11 @@ class Rodi extends UnetAgent
         if (msg instanceof RxFrameNtf && msg.type == Physical.CONTROL && msg.protocol == ACK_PROTOCOL)
         {
             def recdata = dataMsg.decode(msg.data)
-            int os = recdata.src
-            int od = recdata.dst
-            int da = recdata.store
+            int os = recdata.source
+            int od = recdata.destination
+            int da = recdata.dataPktId
 
-            if (myAddr == os)       // 1) I am the OS.
-            {
-                println("ACK received.")
-            }
-
-            /*else                    // 2) I am not the OS of the DATA packet.
+            if (myAddr != os)                    // 2) I am not the OS of the DATA packet.
             {
                 for (int i = 0; i < myroutingTable.size(); i++)
                 {
@@ -396,21 +397,17 @@ class Rodi extends UnetAgent
                         int vo = myroutingTable.get(i).nh       // Next hop.
 
                         // Preparing the ACK packet.
-                        def bytes = dataMsg.encode([src: os, dst: od, store: da])
+                        def bytes = dataMsg.encode([source: os, destination: od, dataPktId: da])
                         TxFrameReq tx = new TxFrameReq(to: vo, type: Physical.CONTROL, protocol: ACK_PROTOCOL, data: bytes)
-                        ReservationReq rs = new ReservationReq(to: tx.to, duration: controlMsgDuration/1000)
-                        TxReserve tr = new TxReserve(txreq: tx, resreq: rs)
-                        reservationTable.add(tr)
-                        mac << rs
-                        //csmaMac(tx)
+                        sendMessage(tx)
                         return
                     }
                 }
-            }*/
+            }
         }
 
         // RREQ and RREP packets.
-        if (msg instanceof RxFrameNtf && msg.type == Physical.CONTROL && msg.protocol == PING_PROTOCOL)
+        if (msg instanceof RxFrameNtf && msg.type == Physical.CONTROL && msg.protocol == ROUTING_PROTOCOL)
         {
             def receivedData        = pdu.decode(msg.data)
 
@@ -441,11 +438,8 @@ class Rodi extends UnetAgent
                     {
                         // Preparing an RREP back to the sender node.
                         def bytes = pdu.encode(typeOfPacket: RREP, requestIDValue: RIDZ, destinationAddress: originalDestination, sourceAddress: originalSource)
-                        TxFrameReq tx = new TxFrameReq(to: msg.from, type: Physical.CONTROL, protocol: PING_PROTOCOL, data: bytes)
-                        ReservationReq rs = new ReservationReq(to: tx.to, duration: controlMsgDuration/1000)
-                        TxReserve tr = new TxReserve(txreq: tx, resreq: rs)
-                        reservationTable.add(tr)
-                        mac << rs
+                        TxFrameReq tx = new TxFrameReq(to: msg.from, type: Physical.CONTROL, protocol: ROUTING_PROTOCOL, data: bytes)
+                        sendMessage(tx)
                         return
                     }
                     // 1.2) I am not the final destination.
@@ -453,11 +447,8 @@ class Rodi extends UnetAgent
                     {   
                         // Preparing an RREQ packet for re-broadcast.
                         def bytes = pdu.encode(typeOfPacket: packetType, requestIDValue: requestIDNumber, destinationAddress: originalDestination, sourceAddress: originalSource)
-                        TxFrameReq tx = new TxFrameReq(to: Address.BROADCAST, type: Physical.CONTROL, protocol: PING_PROTOCOL, data: bytes)
-                        ReservationReq rs = new ReservationReq(to: tx.to, duration: controlMsgDuration/1000)
-                        TxReserve tr = new TxReserve(txreq: tx, resreq: rs)
-                        reservationTable.add(tr)
-                        mac << rs
+                        TxFrameReq tx = new TxFrameReq(to: Address.BROADCAST, type: Physical.CONTROL, protocol: ROUTING_PROTOCOL, data: bytes)
+                        sendMessage(tx)
                         return
                     }
                 }
@@ -521,11 +512,8 @@ class Rodi extends UnetAgent
                     {
                         // Preparing an RREP back to the OS.
                         def bytes = pdu.encode(typeOfPacket: RREP, requestIDValue: RIDZ, destinationAddress: originalDestination, sourceAddress: originalSource)
-                        TxFrameReq tx = new TxFrameReq(to: msg.from, type: Physical.CONTROL, protocol: PING_PROTOCOL, data: bytes)
-                        ReservationReq rs = new ReservationReq(to: tx.to, duration: controlMsgDuration/1000)
-                        TxReserve tr = new TxReserve(txreq: tx, resreq: rs)
-                        reservationTable.add(tr)
-                        mac << rs
+                        TxFrameReq tx = new TxFrameReq(to: msg.from, type: Physical.CONTROL, protocol: ROUTING_PROTOCOL, data: bytes)
+                        sendMessage(tx)
                         return
                     }
 
@@ -538,23 +526,16 @@ class Rodi extends UnetAgent
                             {
                                 // Preparing an RREP back to the OS.
                                 def bytes = pdu.encode(typeOfPacket: RREP, requestIDValue: RIDZ, destinationAddress: originalDestination, sourceAddress: originalSource)
-                                TxFrameReq tx = new TxFrameReq(to: msg.from, type: Physical.CONTROL, protocol: PING_PROTOCOL, data: bytes)
-                                ReservationReq rs = new ReservationReq(to: tx.to, duration: controlMsgDuration/1000)
-                                TxReserve tr = new TxReserve(txreq: tx, resreq: rs)
-                                reservationTable.add(tr)
-                                mac << rs
-                                //csmaMac(tx)
+                                TxFrameReq tx = new TxFrameReq(to: msg.from, type: Physical.CONTROL, protocol: ROUTING_PROTOCOL, data: bytes)
+                                sendMessage(tx)
                                 return
                             }
                         }
 
                         // The RT does not have the final destination entry, re-broadcast the RREQ packet.
                         def bytes = pdu.encode(typeOfPacket: packetType, requestIDValue: requestIDNumber, destinationAddress: originalDestination, sourceAddress: originalSource)
-                        TxFrameReq tx = new TxFrameReq(to: Address.BROADCAST, type: Physical.CONTROL, protocol: PING_PROTOCOL, data: bytes)
-                        ReservationReq rs = new ReservationReq(to: tx.to, duration: controlMsgDuration/1000)
-                        TxReserve tr = new TxReserve(txreq: tx, resreq: rs)
-                        reservationTable.add(tr)
-                        mac << rs
+                        TxFrameReq tx = new TxFrameReq(to: Address.BROADCAST, type: Physical.CONTROL, protocol: ROUTING_PROTOCOL, data: bytes)
+                        sendMessage(tx)
                         return
                     }
                 }
@@ -584,7 +565,7 @@ class Rodi extends UnetAgent
                 if (originalDestination != msg.from)    // msg.from is an Intermediate node.
                 {
                     int veri = 0
-                    for(int i=0; i<myroutingTable.size(); i++)
+                    for (int i = 0; i < myroutingTable.size(); i++)
                     {
                         if (myroutingTable.get(i).destinationAddress == msg.from)
                         {
@@ -620,11 +601,8 @@ class Rodi extends UnetAgent
 
                             // Preparing the RREP packet to be sent back to the OS.
                             def bytes = pdu.encode(typeOfPacket: packetType, requestIDValue: requestIDNumber, destinationAddress: originalDestination, sourceAddress: originalSource)
-                            TxFrameReq tx = new TxFrameReq(to: hop, type: Physical.CONTROL, protocol: PING_PROTOCOL, data: bytes)
-                            ReservationReq rs = new ReservationReq(to: tx.to, duration: controlMsgDuration/1000)
-                            TxReserve tr = new TxReserve(txreq: tx, resreq: rs)
-                            reservationTable.add(tr)
-                            mac << rs
+                            TxFrameReq tx = new TxFrameReq(to: hop, type: Physical.CONTROL, protocol: ROUTING_PROTOCOL, data: bytes)
+                            sendMessage(tx)
                             return
                         }
                     }

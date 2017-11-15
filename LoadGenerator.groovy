@@ -2,16 +2,14 @@ import org.arl.fjage.*
 import org.arl.unet.*
 import org.arl.unet.phy.*
 import org.arl.unet.net.*
-import org.arl.unet.mac.*
-import org.arl.unet.nodeinfo.NodeInfo
-import org.arl.unet.PDU
+import org.arl.unet.nodeinfo.*
 
 class LoadGenerator extends UnetAgent
 {
     private List<Integer> destNodes     // list of possible destination nodes
     private float load                  // normalized load to generate
 
-    private AgentID phy, rdp, node, mac
+    private AgentID phy, rdp, node
     private int myAddr
 
     LoadGenerator(List<Integer> destNodes, float load)
@@ -20,17 +18,20 @@ class LoadGenerator extends UnetAgent
         this.load      = load
     }
 
-    int networksize = ++destNodes.size()
-
     def dataMsg = PDU.withFormat
     {
-        uint8('src')
-        uint8('dst')
-        uint16('store')
+        uint8('source')
+        uint8('destination')
+        uint16('dataPktId')
     }
 
-    // Packet count.
-    private int packetsent = 0
+    private final static int NODE_TRAVERSAL_TIME = 5000
+
+    private int packetsent = 0  // packet count.
+    private int networkSize = ++destNodes.size()
+    private int NET_TRAVERSAL_TIME  = 2*NODE_TRAVERSAL_TIME*networkSize
+
+    ArrayList<Integer> dataPktList = new ArrayList<Integer>()
 
     @Override
     void setup()
@@ -41,67 +42,17 @@ class LoadGenerator extends UnetAgent
     @Override
     void startup() 
     {
-        phy = agentForService Services.PHYSICAL
-        subscribe(topic(phy))
-
-        mac    = agentForService Services.MAC
         rdp    = agentForService Services.ROUTE_MAINTENANCE
+        //rtr    = agentForService Services.ROUTING
         node   = agentForService Services.NODE_INFO
         myAddr = node.Address
-        
-        // in seconds.
-        float dataPktDuration = get(phy, Physical.DATA, PhysicalChannelParam.frameDuration)
-        
+        phy = agentForService Services.PHYSICAL
+        subscribe phy
+
+        float dataPktDuration = get(phy, Physical.DATA, PhysicalChannelParam.frameDuration) // in seconds.
         //compute average packet arrival rate.
         float rate = load/dataPktDuration
-
         println "dataPktDuration = ${dataPktDuration} ${1000/rate}"
-
-        /*add new PoissonBehavior(1000/rate, {
-            
-            // i is the one-fifth part of an interval
-            int i = 1000/(rate*5)
-
-            // j number of nodes will be transmitting at the same time
-            int j = networksize/5
-
-            if (myAddr <= j)
-            {
-                add new WakerBehavior(i, {
-                // send Route Discovery Request here.
-                rdp << new RouteDiscoveryReq(to: rnditem(destNodes), maxHops: 50, count: 1)
-                })
-            } 
-            if (myAddr > j && myAddr <= 2*j)
-            {
-                add new WakerBehavior(2*i, {
-                // send Route Discovery Request here.
-                rdp << new RouteDiscoveryReq(to: rnditem(destNodes), maxHops: 50, count: 1)
-                })
-            }
-            if (myAddr > 2*j && myAddr <= 3*j)
-            {
-                add new WakerBehavior(3*i, {
-                // send Route Discovery Request here.
-                rdp << new RouteDiscoveryReq(to: rnditem(destNodes), maxHops: 50, count: 1)
-                })
-            }
-            if (myAddr > 3*j && myAddr <= 4*j)
-            {
-                add new WakerBehavior(4*i, {
-                // send Route Discovery Request here.
-                rdp << new RouteDiscoveryReq(to: rnditem(destNodes), maxHops: 50, count: 1)
-                })
-            }
-            if (myAddr > 4*j && myAddr <= 5*j)
-            {
-                add new WakerBehavior(5*i, {
-                // send Route Discovery Request here.
-                rdp << new RouteDiscoveryReq(to: rnditem(destNodes), maxHops: 50, count: 1)
-                })
-            }
-            })*/
-
         add new PoissonBehavior(1000/rate, {
             rdp << new RouteDiscoveryReq(to: rnditem(destNodes), maxHops: 50, count: 1)
             })
@@ -129,15 +80,47 @@ class LoadGenerator extends UnetAgent
     @Override
     void processMessage(Message msg) 
     {
-        if (msg instanceof RouteDiscoveryNtf && msg.reliability == true)
+        if (msg instanceof RouteDiscoveryNtf && msg.reliability == true)    // Reliable RouteDiscoveryNtf
         {
-            int fd  = msg.getTo()
-            int hop = msg.getNextHop()
             phy << new ClearReq()   // clear any on-going transmission.
             rxDisable()
-            phy << new TxFrameReq(to: hop, type: Physical.DATA, protocol: Protocol.DATA, data: dataMsg.encode([src: myAddr, dst: fd, store: ++packetsent]))
-            println("SENT!")
+            def bytes = dataMsg.encode([source: myAddr, destination: msg.to, dataPktId: ++packetsent])
+            phy << new TxFrameReq(to: msg.nextHop, type: Physical.DATA, protocol: Protocol.DATA, data: bytes)
             add new WakerBehavior(1000, {rxEnable()})
+            dataPktList.add(packetsent)
+
+            add new WakerBehavior(NET_TRAVERSAL_TIME, {
+                if (dataPktList.contains(packetsent))
+                {
+                    println("PACKET NOT DELIVERED")
+                    /*  If the node does not recieve an ACK in NET_TRAVERSAL_TIME of the network,
+                    *   send a RouteDiscoveryNtf for the same destination with false reliability.
+                    */
+                    RouteDiscoveryNtf ntf = new RouteDiscoveryNtf(
+                        recipient:   msg.sender,
+                        to:          msg.to, 
+                        nextHop:     msg.nextHop,
+                        reliability: false)
+                    send ntf
+                }
+                })
+            println(myAddr+" packet no: "+packetsent+" SENT! at "+currentTimeMillis())
+        }
+
+        if (msg instanceof RxFrameNtf && msg.protocol == Protocol.USER) // ACK packets.
+        {
+            def info = dataMsg.decode(msg.data)
+            int os = info.source
+
+            if (myAddr == os)       // I am the OS.
+            {
+                println(myAddr+" ACK RECEIVED for "+info.dataPktId)
+                for (int i = 0; i < dataPktList.size(); i++) {if (dataPktList.get(i) == info.dataPktId) {dataPktList.remove(i)}}
+            }
+        }
+        if (msg instanceof RouteDiscoveryNtf && msg.reliability == false)
+        {
+            println("ANIMAL")
         }
     }
 }

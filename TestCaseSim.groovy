@@ -16,7 +16,7 @@ RBF Protocol Simulation
 ///////////////////////////////////////////////////////////////////////////////
 // modem and channel model parameters
 
-modem.dataRate         = [800, 2400].bps
+modem.dataRate         = [2400, 2400].bps
 modem.frameLength      = [11, 100].bytes
 modem.preambleDuration = 0
 modem.txDelay          = 0
@@ -93,7 +93,7 @@ File out = new File("logs/results.txt")
 out.text = ''
 
 //for (def load = loadRange[0]; load <= loadRange[1]; load += loadRange[2]) {
-  load  = 0.2
+  load  = 0.5
   simulate T, {
     
     nodes.each { myAddr ->
@@ -101,7 +101,7 @@ out.text = ''
       // Divide network load across nodes evenly.
       float loadPerNode = load/nodes.size()      
       def routingAgent = new Rodi()
-      def macAgent = new Csma()
+      def macAgent = new MySimpleThrottledMac()//Csma()
       if(myAddr == 1)
       {
         def myNode = node("${myAddr}", address: myAddr, location: nodeLocation[myAddr], shell: true, stack: {container ->   
@@ -116,7 +116,7 @@ out.text = ''
           container.add 'mac', macAgent
           })
       }
-      
+      macAgent.targetLoad         = loadPerNode
       macAgent.dataMsgDuration    = (int)(8000*modem.frameLength[1]/modem.dataRate[1] + 0.5)
       macAgent.controlMsgDuration = (int)(8000*modem.frameLength[0]/modem.dataRate[0] + 0.5)
       
