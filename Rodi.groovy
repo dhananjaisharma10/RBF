@@ -85,16 +85,6 @@ class Rodi extends UnetAgent
         phy    = agentForService(Services.PHYSICAL)
 
         subscribe phy
-        tables()
-    }
-
-    private void tables()
-    {
-        add new WakerBehavior(890000,
-        {
-            println(myAddr+"'s Routing table  -> "+myroutingTable.destinationAddress+myroutingTable.nh)
-            println(myAddr+"'s Packet History -> "+mypacketHistoryTable.requestIDNo+mypacketHistoryTable.sendernode)
-            })
     }
 
     // Broadcast an RREQ packet.
@@ -327,7 +317,6 @@ class Rodi extends UnetAgent
             for (int i = 0; i < myroutingTable.size(); i++) {
                 if (myroutingTable.get(i).destinationAddress == msg.to) {
                     myroutingTable.remove(i)
-                    println("ROUTE DELETED")
                 }
             }
             //  Do another Route Discovery.
@@ -345,7 +334,6 @@ class Rodi extends UnetAgent
 
             if (myAddr == od)       // I am the final destination.
             {
-                println(myAddr+" DATA RECEIVED from "+os)
                 for (int i = 0; i < myroutingTable.size(); i++)
                 {
                     if (myroutingTable.get(i).destinationAddress == os)
@@ -397,7 +385,6 @@ class Rodi extends UnetAgent
                         def bytes = dataMsg.encode([source: os, destination: od, dataPktId: da])
                         TxFrameReq tx = new TxFrameReq(to: vo, type: Physical.CONTROL, protocol: ACK_PROTOCOL, data: bytes)
                         sendMessage(tx)
-                        return
                     }
                 }
             }
@@ -437,7 +424,6 @@ class Rodi extends UnetAgent
                         def bytes = pdu.encode(typeOfPacket: RREP, requestIDValue: RIDZ, destinationAddress: originalDestination, sourceAddress: originalSource)
                         TxFrameReq tx = new TxFrameReq(to: msg.from, type: Physical.CONTROL, protocol: ROUTING_PROTOCOL, data: bytes)
                         sendMessage(tx)
-                        return
                     }
                     // 1.2) I am not the final destination.
                     else
@@ -446,7 +432,6 @@ class Rodi extends UnetAgent
                         def bytes = pdu.encode(typeOfPacket: packetType, requestIDValue: requestIDNumber, destinationAddress: originalDestination, sourceAddress: originalSource)
                         TxFrameReq tx = new TxFrameReq(to: Address.BROADCAST, type: Physical.CONTROL, protocol: ROUTING_PROTOCOL, data: bytes)
                         sendMessage(tx)
-                        return
                     }
                 }
 
@@ -511,7 +496,6 @@ class Rodi extends UnetAgent
                         def bytes = pdu.encode(typeOfPacket: RREP, requestIDValue: RIDZ, destinationAddress: originalDestination, sourceAddress: originalSource)
                         TxFrameReq tx = new TxFrameReq(to: msg.from, type: Physical.CONTROL, protocol: ROUTING_PROTOCOL, data: bytes)
                         sendMessage(tx)
-                        return
                     }
 
                     // 2.2) I am not the final destination. I check my RT.
@@ -533,7 +517,6 @@ class Rodi extends UnetAgent
                         def bytes = pdu.encode(typeOfPacket: packetType, requestIDValue: requestIDNumber, destinationAddress: originalDestination, sourceAddress: originalSource)
                         TxFrameReq tx = new TxFrameReq(to: Address.BROADCAST, type: Physical.CONTROL, protocol: ROUTING_PROTOCOL, data: bytes)
                         sendMessage(tx)
-                        return
                     }
                 }
             } // RREQ
