@@ -216,6 +216,7 @@ class Csma extends UnetAgent
     send new ReservationStatusNtf(recipient: msg.sender, requestID: msg.msgID, to: msg.to, from: myAddr, status: status)
   }
 
+  // Parameters to be received from Simulation file.
   int controlMsgDuration
   int dataMsgDuration
   double targetLoad
