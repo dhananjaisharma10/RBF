@@ -92,7 +92,6 @@ class LoadGenerator extends UnetAgent
             add new WakerBehavior(NET_TRAVERSAL_TIME, {
                 if (dataPktList.contains(packetsent))
                 {
-                    println("PACKET NOT DELIVERED")
                     /*  If the node does not recieve an ACK in NET_TRAVERSAL_TIME of the network,
                     *   send a RouteDiscoveryNtf for the same destination with false reliability.
                     */
@@ -104,7 +103,6 @@ class LoadGenerator extends UnetAgent
                     send ntf
                 }
                 })
-            println(myAddr+" packet no: "+packetsent+" SENT! at "+currentTimeMillis())
         }
 
         if (msg instanceof RxFrameNtf && msg.protocol == Protocol.USER) // ACK packets.
@@ -114,13 +112,8 @@ class LoadGenerator extends UnetAgent
 
             if (myAddr == os)       // I am the OS.
             {
-                println(myAddr+" ACK RECEIVED for "+info.dataPktId)
                 for (int i = 0; i < dataPktList.size(); i++) {if (dataPktList.get(i) == info.dataPktId) {dataPktList.remove(i)}}
             }
-        }
-        if (msg instanceof RouteDiscoveryNtf && msg.reliability == false)
-        {
-            println("ANIMAL")
         }
     }
 }
