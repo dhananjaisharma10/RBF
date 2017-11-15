@@ -58,8 +58,6 @@ class Rodi extends UnetAgent
 
     private final static int MAX_TRANSMISSIONS = 4  // 1 + re-transmissions
 
-    private final static long BACKOFF_RANDOM = 5000
-
     ArrayList<Rodi.RoutingInformation> myroutingTable  = new ArrayList<Rodi.RoutingInformation>()   //routing table
     ArrayList<Rodi.PacketHistory> mypacketHistoryTable = new ArrayList<Rodi.PacketHistory>()        //packet history table
     ArrayList<Rodi.Attempt> attempting                 = new ArrayList<Rodi.Attempt>()              //re-tx attempts
