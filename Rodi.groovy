@@ -31,6 +31,12 @@ class Rodi extends UnetAgent
         private ReservationReq resreq
     }
 
+    private class FatalAttempts
+    {
+        private int dest
+        private int attempt
+    }
+
     // PDU for CONTROL packets: RREQ and RREP.
     private final static PDU pdu = PDU.withFormat
     {
@@ -56,12 +62,14 @@ class Rodi extends UnetAgent
     private final static int RREP = 0x02
     private final static int RIDZ = 0
 
-    private final static int MAX_TRANSMISSIONS = 4  // 1 + re-transmissions
+    private final static int MAX_TRANSMISSIONS  = 4     // 1 + re-transmissions
+    private final static int MAX_FATAL_ATTEMPTS = 2
 
     ArrayList<Rodi.RoutingInformation> myroutingTable  = new ArrayList<Rodi.RoutingInformation>()   //routing table
     ArrayList<Rodi.PacketHistory> mypacketHistoryTable = new ArrayList<Rodi.PacketHistory>()        //packet history table
     ArrayList<Rodi.Attempt> attempting                 = new ArrayList<Rodi.Attempt>()              //re-tx attempts
     ArrayList<Rodi.TxReserve> reservationTable         = new ArrayList<Rodi.TxReserve>()            //packets for MAC
+    ArrayList<Rodi.FatalAttempts> fatalAttemptTable    = new ArrayList<Rodi.FatalAttempts>()
 
     private final static int ROUTING_PROTOCOL   = Protocol.ROUTING
     private final static int DATA_PROTOCOL      = Protocol.DATA
@@ -85,6 +93,16 @@ class Rodi extends UnetAgent
         phy    = agentForService(Services.PHYSICAL)
 
         subscribe phy
+        tables()
+    }
+
+    private void tables()
+    {
+        add new WakerBehavior(890000,
+        {
+            println(myAddr+"'s Routing table  -> "+myroutingTable.destinationAddress+myroutingTable.nh)
+            println(myAddr+"'s Packet History -> "+mypacketHistoryTable.requestIDNo+mypacketHistoryTable.sendernode)
+            })
     }
 
     // Broadcast an RREQ packet.
@@ -99,49 +117,70 @@ class Rodi extends UnetAgent
         sendMessage(tx)
     }
 
-    // Receive the notification within one round trip time, otherwise send a new RDR.
-    /*
-    private void checkNotification(int dest)
+
+    private void routeMaintenance(int destinationNode)
     {
-        add new WakerBehavior(2*networksize*hoptime + 3000, 
+        for (int i = 0; i < myroutingTable.size(); i++)
         {
-            // RT is still empty, that means I never got the notification. Do a new RD.
-            if (myroutingTable.size() == 0)
+            if (myroutingTable.get(i).destinationAddress == destinationNode)
             {
-                println("Still no entry in the RT")
-                def rdp = agentForService(Services.ROUTE_MAINTENANCE)
-                rdp << new RouteDiscoveryReq(to: dest, maxHops: 50, count: 1)
-                return
+                myroutingTable.remove(i)
             }
+        }
+        // No history in FATAL ATTEMPTS, add this incident.
+        /*if (fatalAttemptTable.size() == 0)
+        {
+            FatalAttempts fa = new FatalAttempts(dest: destinationNode, attempt: 1)
+            fatalAttemptTable.add(fa)
+        }
 
-            // RT does have some entries. Let's see whether we got the intended destination or not.
-            else
+        // There are some fatal attempts.
+        else
+        {
+            for (int i = 0; i < fatalAttemptTable.size(); i++)
             {
-                for (int i = 0; i < myroutingTable.size(); i++)
+                // Check for FATAL ATTEMPT history of the destinationNode.
+                if (fatalAttemptTable.get(i).dest == destinationNode)
                 {
-                    // The destination is there in the RT.
-                    if (myroutingTable.get(i).destinationAddress == dest)
+                    // MAX_FATAL_ATTEMPTS not done.
+                    if (fatalAttemptTable.get(i).attempt < MAX_FATAL_ATTEMPTS)
                     {
-                        return
+                        fatalAttemptTable.get(i).attempt++
                     }
-                }
 
-                // This means the destination couldn't be found. Start a route discovery all over again.
-                println("The destination couldn't be found in the RT, initiating a new RD")
-                def rdp = agentForService(Services.ROUTE_MAINTENANCE)
-                rdp << new RouteDiscoveryReq(to: dest, maxHops: 50, count: 1)
-                return
+                    // MAX_FATAL_ATTEMPTS reached.
+                    if (fatalAttemptTable.get(i).attempt == MAX_FATAL_ATTEMPTS)
+                    {
+                        fatalAttemptTable.remove(i) // Remove history of fatal attemps for this destinationNode.
+
+                        for (int j = 0; j < myroutingTable.size(); j++)
+                        {
+                            if (myroutingTable.get(j).destinationAddress == destinationNode)
+                            {
+                                myroutingTable.remove(j)    // Remove this NODE entry from the RT.
+                                break
+                            }
+                        }
+
+                        // If needed, the node will send a RouteDiscoveryReq for this destinationNode.
+
+                    }
+                    return
+                }
             }
-            })
+
+            // If this node was never there in the FATAL ATTEMPT history, add it.
+            FatalAttempts fa = new FatalAttempts(dest: destinationNode, attempt: 1)
+            fatalAttemptTable.add(fa)
+        }*/
     }
-    */
 
     // Sending Reservation Requests to MAC protocol.
     private void sendMessage(TxFrameReq txReq)
     {
         if (txReq.type == Physical.CONTROL)    // CTRL packets.
         {
-            if (txReq.protocol == ROUTING_PROTOCOL)
+            if (txReq.protocol == ROUTING_PROTOCOL) // RREQ or RREP packet.
             {
                 ReservationReq rs = new ReservationReq(to: txReq.to, duration: controlMsgDuration/1000)
                 TxReserve tr = new TxReserve(txreq: txReq, resreq: rs)
@@ -149,7 +188,7 @@ class Rodi extends UnetAgent
                 mac << rs       // send ReservationRequest.
             }
 
-            if (txReq.protocol == ACK_PROTOCOL)
+            if (txReq.protocol == ACK_PROTOCOL)     // ACK packets.
             {   // duration for ACK packets with a 2400 bps rate.
                 ReservationReq rs = new ReservationReq(to: txReq.to, duration: 13.5/1000)
                 TxReserve tr = new TxReserve(txreq: txReq, resreq: rs)
@@ -234,6 +273,7 @@ class Rodi extends UnetAgent
                 }
             }
 
+            //  2) RT is not empty.
             /*  If my RT has some entries, check for destination first:
             *   1) If found, send a notification;
             *   2) If not, do a Route discovery if the number of re-transmissions permits.
@@ -288,40 +328,41 @@ class Rodi extends UnetAgent
     @Override
     void processMessage(Message msg)
     {
-        if (msg instanceof ReservationStatusNtf && msg.status == ReservationStatus.START)
+        if (msg instanceof ReservationStatusNtf)
         {
-            for (int i = 0; i < reservationTable.size(); i++)
+            // START sending the packet, then remove it from reservation table.
+            if (msg.status == ReservationStatus.START)
             {
-                if (msg.requestID == reservationTable.get(i).resreq.requestID)
+                for (int i = 0; i < reservationTable.size(); i++)
                 {
-                    phy << reservationTable.get(i).txreq
-                    reservationTable.remove(i)
+                    if (msg.requestID == reservationTable.get(i).resreq.requestID)
+                    {
+                        // Send this message to PHY channel.
+                        phy << reservationTable.get(i).txreq
+                        reservationTable.remove(i)
+                        break
+                    }
+                }
+            }
+
+            // FAILED to find a reservation for the packet. Remove it.
+            if (msg.status == ReservationStatus.FAILURE)
+            {
+                for (int i = 0; i < reservationTable.size(); i++)
+                {
+                    if (msg.requestID == reservationTable.get(i).resreq.requestID)
+                    {
+                        reservationTable.remove(i)
+                        break
+                    }
                 }
             }
         }
 
-        if (msg instanceof ReservationStatusNtf && msg.status == ReservationStatus.FAILURE)
-        {
-            for (int i = 0; i < reservationTable.size(); i++)
-            {
-                if (msg.requestID == reservationTable.get(i).resreq.requestID)
-                {
-                    reservationTable.remove(i)
-                }
-            }
-        }
         // The ROUTE has not returned ACK within NET_TRAVERSAL_TIME.
         if (msg instanceof RouteDiscoveryNtf && msg.reliability == false)
         {
-            // Delete the route for msg.to Destination.
-            for (int i = 0; i < myroutingTable.size(); i++) {
-                if (myroutingTable.get(i).destinationAddress == msg.to) {
-                    myroutingTable.remove(i)
-                }
-            }
-            //  Do another Route Discovery.
-            def rdp = agentForService(Services.ROUTE_MAINTENANCE)
-            rdp << new RouteDiscoveryReq(to: msg.to, maxHops: 50, count: 1)
+            routeMaintenance(msg.to)
         }
 
         // DATA Packets.
@@ -334,6 +375,7 @@ class Rodi extends UnetAgent
 
             if (myAddr == od)       // I am the final destination.
             {
+                println(myAddr+" DATA RECEIVED from "+os)
                 for (int i = 0; i < myroutingTable.size(); i++)
                 {
                     if (myroutingTable.get(i).destinationAddress == os)
@@ -385,6 +427,7 @@ class Rodi extends UnetAgent
                         def bytes = dataMsg.encode([source: os, destination: od, dataPktId: da])
                         TxFrameReq tx = new TxFrameReq(to: vo, type: Physical.CONTROL, protocol: ACK_PROTOCOL, data: bytes)
                         sendMessage(tx)
+                        return
                     }
                 }
             }
@@ -418,12 +461,13 @@ class Rodi extends UnetAgent
                     }
 
                     // 1.1) If the packet was for me only.
-                    if(myAddr == originalDestination)
+                    if (myAddr == originalDestination)
                     {
                         // Preparing an RREP back to the sender node.
                         def bytes = pdu.encode(typeOfPacket: RREP, requestIDValue: RIDZ, destinationAddress: originalDestination, sourceAddress: originalSource)
                         TxFrameReq tx = new TxFrameReq(to: msg.from, type: Physical.CONTROL, protocol: ROUTING_PROTOCOL, data: bytes)
                         sendMessage(tx)
+                        return
                     }
                     // 1.2) I am not the final destination.
                     else
@@ -432,6 +476,7 @@ class Rodi extends UnetAgent
                         def bytes = pdu.encode(typeOfPacket: packetType, requestIDValue: requestIDNumber, destinationAddress: originalDestination, sourceAddress: originalSource)
                         TxFrameReq tx = new TxFrameReq(to: Address.BROADCAST, type: Physical.CONTROL, protocol: ROUTING_PROTOCOL, data: bytes)
                         sendMessage(tx)
+                        return
                     }
                 }
 
@@ -496,6 +541,7 @@ class Rodi extends UnetAgent
                         def bytes = pdu.encode(typeOfPacket: RREP, requestIDValue: RIDZ, destinationAddress: originalDestination, sourceAddress: originalSource)
                         TxFrameReq tx = new TxFrameReq(to: msg.from, type: Physical.CONTROL, protocol: ROUTING_PROTOCOL, data: bytes)
                         sendMessage(tx)
+                        return
                     }
 
                     // 2.2) I am not the final destination. I check my RT.
@@ -517,6 +563,7 @@ class Rodi extends UnetAgent
                         def bytes = pdu.encode(typeOfPacket: packetType, requestIDValue: requestIDNumber, destinationAddress: originalDestination, sourceAddress: originalSource)
                         TxFrameReq tx = new TxFrameReq(to: Address.BROADCAST, type: Physical.CONTROL, protocol: ROUTING_PROTOCOL, data: bytes)
                         sendMessage(tx)
+                        return
                     }
                 }
             } // RREQ
