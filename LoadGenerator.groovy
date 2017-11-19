@@ -25,11 +25,14 @@ class LoadGenerator extends UnetAgent
         uint16('dataPktId')
     }
 
-    private final static int NODE_TRAVERSAL_TIME = 5000
+    // TIME taken to traverse one hop. Includes queueing delays, propagation delay and some buffer.
+    final static int NODE_TRAVERSAL_TIME = 5000
 
-    private int packetsent = 0  // packet count.
-    private int networkSize = ++destNodes.size()
-    private int NET_TRAVERSAL_TIME  = 2*NODE_TRAVERSAL_TIME*networkSize
+    int packetsent = 0                          // packet count for DATA packets.
+    int networkSize = ++destNodes.size()        // number of nodes in the network.
+
+    // Round Trip Time (RTT) to traverse the whole network.
+    int netTraversalTime = 2*NODE_TRAVERSAL_TIME*networkSize
 
     ArrayList<Integer> dataPktList = new ArrayList<Integer>()
 
@@ -43,7 +46,6 @@ class LoadGenerator extends UnetAgent
     void startup() 
     {
         rdp    = agentForService Services.ROUTE_MAINTENANCE
-        //rtr    = agentForService Services.ROUTING
         node   = agentForService Services.NODE_INFO
         myAddr = node.Address
         phy = agentForService Services.PHYSICAL
@@ -52,7 +54,8 @@ class LoadGenerator extends UnetAgent
         float dataPktDuration = get(phy, Physical.DATA, PhysicalChannelParam.frameDuration) // in seconds.
         //compute average packet arrival rate.
         float rate = load/dataPktDuration
-        println "dataPktDuration = ${dataPktDuration} ${1000/rate}"
+
+        // creating poisson intervals
         add new PoissonBehavior(1000/rate, {
             rdp << new RouteDiscoveryReq(to: rnditem(destNodes), maxHops: 50, count: 1)
             })
@@ -61,7 +64,7 @@ class LoadGenerator extends UnetAgent
 
     private void rxDisable()
     {
-        //DisableReceiver
+        // Disable Receiver
         ParameterReq req = new ParameterReq(agentForService(Services.PHYSICAL))
         req.get(PhysicalParam.rxEnable)
         ParameterRsp rsp = (ParameterRsp) request(req, 1000)            
@@ -70,7 +73,7 @@ class LoadGenerator extends UnetAgent
 
     private void rxEnable()
     {
-        //EnableReceiver
+        // Enable Receiver
         ParameterReq req = new ParameterReq(agentForService(Services.PHYSICAL))
         req.get(PhysicalParam.rxEnable)
         ParameterRsp rsp = (ParameterRsp)request(req, 1000)         
@@ -86,15 +89,23 @@ class LoadGenerator extends UnetAgent
             rxDisable()
             def bytes = dataMsg.encode([source: myAddr, destination: msg.to, dataPktId: ++packetsent])
             phy << new TxFrameReq(to: msg.nextHop, type: Physical.DATA, protocol: Protocol.DATA, data: bytes)
-            add new WakerBehavior(1000, {rxEnable()})
+
+            println(myAddr+" SADA at "+currentTimeMillis())
+
+            // Enable receiver after 417 ms (dataMsgDuration at 2400 bps).
+            add new WakerBehavior(417, {rxEnable()})
+
+            // Add this packet into the data packet list.
             dataPktList.add(packetsent)
 
-            add new WakerBehavior(NET_TRAVERSAL_TIME, {
+            // Check for this packet in the dataPkyList after net traversal time.
+            // If it is still there, send an unreliable RouteDiscoveryNtf for this destination.
+            add new WakerBehavior(netTraversalTime,
+            {
                 if (dataPktList.contains(packetsent))
                 {
-                    /*  If the node does not recieve an ACK in NET_TRAVERSAL_TIME of the network,
-                    *   send a RouteDiscoveryNtf for the same destination with false reliability.
-                    */
+                    println("PACKET NOT DELIVERED")
+
                     RouteDiscoveryNtf ntf = new RouteDiscoveryNtf(
                         recipient:   msg.sender,
                         to:          msg.to, 
@@ -105,13 +116,24 @@ class LoadGenerator extends UnetAgent
                 })
         }
 
-        if (msg instanceof RxFrameNtf && msg.protocol == Protocol.USER) // ACK packets.
+        if (msg instanceof TxFrameNtf)
         {
-            def info = dataMsg.decode(msg.data)
-            int os = info.source
+            if (msg.type == Physical.DATA)
+            {
+                println("DATAPKT")
+            }
+        }
+
+        // ACK packets.
+        if (msg instanceof RxFrameNtf && msg.protocol == Protocol.USER)
+        {
+            def info = dataMsg.decode(msg.data) // decode
+            int os = info.source                // original source
 
             if (myAddr == os)       // I am the OS.
             {
+                println(myAddr+" ACK RECEIVED for "+info.dataPktId)
+                // remove packet id from the data packet list.
                 for (int i = 0; i < dataPktList.size(); i++) {if (dataPktList.get(i) == info.dataPktId) {dataPktList.remove(i)}}
             }
         }

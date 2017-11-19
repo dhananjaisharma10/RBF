@@ -36,43 +36,18 @@ def loadRange = [0.1, 1.5, 0.1]
 def T = 15.minutes
 
 def nodes = 1..5
-int dimension = 50*Math.sqrt(nodes.size())
+def dimension = Math.cbrt(125000*nodes.size())//50*Math.sqrt(nodes.size())
 
+///////////////////////////////////////////////////////////////////////////////
+// distibute nodes randomly
 def nodeLocation = [:]
 nodes.each { myAddr ->
   nodeLocation[myAddr] = [rnd(0.m, dimension.m), rnd(0.m, dimension.m), rnd(0.m, -dimension.m)]
 }
 
-/*
-def nodeLocation = [:]
-nodes.each { myAddr ->
-  
-  if(myAddr == 1)
-  {
-    nodeLocation[myAddr] = [rnd(0.m, 50.m), rnd(0.m, 50.m), rnd(0.m, -50.m)]
-  }
-  if(myAddr == 2)
-  {
-    nodeLocation[myAddr] = [rnd(50.m, 100.m), rnd(0.m, 50.m), rnd(-(halfdimension - 50).m, -dimension.m)]
-  }
-  if(myAddr == 3)
-  {
-    nodeLocation[myAddr] = [rnd(halfdimension.m, (halfdimension + 50).m), rnd(halfdimension.m, (halfdimension + 50).m), rnd(0.m, -50.m)]
-  }
-  if(myAddr == 4)
-  {
-    nodeLocation[myAddr] = [rnd(0.m, 50.m), rnd(halfdimension.m, (halfdimension + 50).m), rnd(-(halfdimension-50).m, -halfdimension.m)]
-  }
-  if(myAddr == 5)
-  {
-    nodeLocation[myAddr] = [rnd((dimension-50).m, dimension.m), rnd((dimension-50).m, dimension.m), rnd(-(dimension-50).m, -dimension.m)]
-  }
-}
-*/
-
 // compute average distance between nodes for display
 def sum = 0
-def   n = 0
+def n = 0
 def propagationDelay = new Integer[nodes.size()][nodes.size()]
 nodes.each { n1 ->
   nodes.each { n2 ->
@@ -87,32 +62,35 @@ nodes.each { n1 ->
 def avgRange = sum/n
 println """Average internode distance: ${Math.round(avgRange)} m, delay: ${Math.round(1000*avgRange/channel.soundSpeed)} ms
 TX Count\tRX Count\tLoss %\t\tOffered Load\tThroughput
---------\t--------\t------\t\t------------\t\t--------"""
+--------\t--------\t------\t\t------------\t----------"""
 
 File out = new File("logs/results.txt")
 out.text = ''
 
 //for (def load = loadRange[0]; load <= loadRange[1]; load += loadRange[2]) {
-  load  = 0.5
+  load  = 1
   simulate T, {
     
     nodes.each { myAddr ->
     
       // Divide network load across nodes evenly.
-      float loadPerNode = load/nodes.size()      
+      float loadPerNode = load/nodes.size() 
+           
       def routingAgent = new Rodi()
-      def macAgent = new MySimpleThrottledMac()//Csma()
+      def macAgent = new Csma()
+      
       if(myAddr == 1)
       {
         def myNode = node("${myAddr}", address: myAddr, location: nodeLocation[myAddr], shell: true, stack: {container ->   
-          container.add 'rodi', routingAgent
+          container.add 'aodv', routingAgent
           container.add 'mac', macAgent
           })
       }
+      
       else
       {
         def myNode = node("${myAddr}", address: myAddr, location: nodeLocation[myAddr], stack: {container ->   
-          container.add 'rodi', routingAgent
+          container.add 'aodv', routingAgent
           container.add 'mac', macAgent
           })
       }
@@ -123,7 +101,9 @@ out.text = ''
       routingAgent.dataMsgDuration    = (int)(8000*modem.frameLength[1]/modem.dataRate[1] + 0.5)
       routingAgent.controlMsgDuration = (int)(8000*modem.frameLength[0]/modem.dataRate[0] + 0.5)
       routingAgent.networksize        = nodes.size()
-      container.add 'load', new LoadGenerator(nodes-myAddr, loadPerNode)  
+      
+      container.add 'load', new LoadGenerator(nodes-myAddr, loadPerNode)
+      
     } // each
   
   } // simulation

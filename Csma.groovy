@@ -2,7 +2,8 @@ import org.arl.fjage.*
 import org.arl.unet.*
 import org.arl.unet.phy.*
 import org.arl.unet.mac.*
-import org.arl.unet.nodeinfo.NodeInfo
+import org.arl.unet.net.*
+import org.arl.unet.nodeinfo.*
 
 class Csma extends UnetAgent
 {
@@ -10,12 +11,10 @@ class Csma extends UnetAgent
 
   private int myAddr
 
-  private final static int MAX_BACKOFF_SLOTS = 13
-  private final static int MIN_BACKOFF_SLOTS = 3
-  private final static int MAX_RETRY_COUNT   = 10
+  private final static int MAX_RETRY_COUNT   = 6
 
-  private final static float BACKOFF_RANDOM = 2.seconds
-  private final static float MAX_PROP_DELAY = 70.milliseconds
+  private final static float BACKOFF_RANDOM = 1.seconds
+  private final static float MAX_PROP_DELAY = 70.milliseconds   // for 100 m tx range and 1500 mps acoustic speed.
 
   private final static int MAX_QUEUE_LEN = 16
 
@@ -26,7 +25,7 @@ class Csma extends UnetAgent
   }
 
   private enum Event {
-    RX_CTRL, RX_DATA, SNOOP_CTRL, SNOOP_DATA
+    RX_CTRL, RX_DATA, RX_ACK, SNOOP_CTRL, SNOOP_DATA, SNOOP_ACK
   }
     
   private FSMBehavior fsm = FSMBuilder.build
@@ -34,7 +33,8 @@ class Csma extends UnetAgent
     int retryCount = 0
     float backoff = 0
 
-    state(State.IDLE) {   // State
+    // IDLE state.
+    state(State.IDLE) {
       action {
         if (!queue.isEmpty()) {
           setNextState(State.SENSING)
@@ -43,7 +43,8 @@ class Csma extends UnetAgent
       }
     }
 
-    state(State.WAIT) {   // State
+    // Wait for random time before sensing the channel.
+    state(State.WAIT) {
       onEnter {
         after(rnd(0, BACKOFF_RANDOM)) {
           setNextState(State.SENSING)
@@ -51,13 +52,14 @@ class Csma extends UnetAgent
       }
     }
 
-    state(State.BACKOFF) {  // State
+    // Backoff state.
+    state(State.BACKOFF) {
       onEnter {
         after(backoff.milliseconds) {
           setNextState(State.SENSING)
         }
       }
-
+      println(myAddr+" BACKOFF")
       onEvent(Event.RX_CTRL) {
         backoff = controlMsgDuration
         reenterState()
@@ -89,21 +91,28 @@ class Csma extends UnetAgent
       }
     }
 
-    state(State.SENSING) {  // State
+    // Sense the channel.
+    state(State.SENSING) {
       onEnter {
+
         if (phy.busy) { // This would only be for receiving any packets.
+
           if (retryCount == MAX_RETRY_COUNT) {
             sendReservationStatusNtf(queue.poll(), ReservationStatus.FAILURE)
             retryCount = 0
             setNextState(State.IDLE)
           }
+
           else if (retryCount < MAX_RETRY_COUNT) {
             retryCount++
+            println(myAddr+" SLOTS: "+retryCount)
             Message msg = queue.peek()
-            backoff = getNumberofSlots(msg)*1000
+            // in ms
+            backoff = AgentLocalRandom.current().nextExp(targetLoad/msg.duration)*1000
             setNextState(State.BACKOFF)
           }
         }
+
         else {  // Send Ntf
           ReservationReq msg = queue.poll()
           retryCount = 0
@@ -118,16 +127,12 @@ class Csma extends UnetAgent
       }
     }
   }
-    // ExponentialBackoff
-  private int getNumberofSlots(Message msg)
-  {
-    return AgentLocalRandom.current().nextExp(targetLoad/msg.duration)
-  }
 
   @Override
   void setup()
   {
     register Services.MAC
+    register Services.ROUTING
   }
 
   @Override
@@ -169,28 +174,30 @@ class Csma extends UnetAgent
   {
     if (msg instanceof RxFrameNtf)
     {
-      if (msg.type == Physical.CONTROL && msg.protocol == Protocol.ROUTING)
+      if (msg.type == Physical.CONTROL && msg.protocol == Protocol.ROUTING) // RREQ and RREP packets.
       {
         fsm.trigger(msg.to == myAddr ? Event.RX_CTRL : Event.SNOOP_CTRL)
       }
-      if (msg.type == Physical.CONTROL && msg.protocol == Protocol.USER)
+      if (msg.type == Physical.CONTROL && msg.protocol == Protocol.USER)    // ACK packets.
       {
         fsm.trigger(msg.to == myAddr ? Event.RX_ACK : Event.SNOOP_ACK)
       }
-      if (msg.type == Physical.DATA)
+      if (msg.type == Physical.DATA)  // DATA packets.
       {
         fsm.trigger(msg.to == myAddr ? Event.RX_DATA : Event.SNOOP_DATA)
       }
     }
-    if (msg instanceof RouteDiscoveryNtf && msg.reliability == true)  // extends the backoff.
+
+    if (msg instanceof RouteDiscoveryNtf && msg.reliability == true)  // A DATA transfer is about to start. Extend the backoff.
     {
+      println("HHHHHHHHHHHHHHHHHHHH")
       fsm.trigger(msg.to == myAddr ? Event.RX_DATA : Event.SNOOP_DATA)
     }
   }
 
   private void rxDisable()
   {
-    //DisableReceiver
+    // Disable Receiver
     ParameterReq req = new ParameterReq(agentForService(Services.PHYSICAL))
     req.get(PhysicalParam.rxEnable)
     ParameterRsp rsp = (ParameterRsp) request(req, 1000)            
@@ -199,7 +206,7 @@ class Csma extends UnetAgent
 
   private void rxEnable()
   {
-    //EnableReceiver
+    // Enable Receiver
     ParameterReq req = new ParameterReq(agentForService(Services.PHYSICAL))
     req.get(PhysicalParam.rxEnable)
     ParameterRsp rsp = (ParameterRsp)request(req, 1000)         
@@ -216,7 +223,6 @@ class Csma extends UnetAgent
     send new ReservationStatusNtf(recipient: msg.sender, requestID: msg.msgID, to: msg.to, from: myAddr, status: status)
   }
 
-  // Parameters to be received from Simulation file.
   int controlMsgDuration
   int dataMsgDuration
   double targetLoad
