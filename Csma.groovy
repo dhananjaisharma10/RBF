@@ -2,7 +2,6 @@ import org.arl.fjage.*
 import org.arl.unet.*
 import org.arl.unet.phy.*
 import org.arl.unet.mac.*
-import org.arl.unet.net.*
 import org.arl.unet.nodeinfo.*
 
 class Csma extends UnetAgent
@@ -11,7 +10,7 @@ class Csma extends UnetAgent
 
   private int myAddr
 
-  private final static int MAX_RETRY_COUNT   = 6
+  private final static int MAX_RETRY_COUNT  = 6
 
   private final static float BACKOFF_RANDOM = 1.seconds
   private final static float MAX_PROP_DELAY = 70.milliseconds   // for 100 m tx range and 1500 mps acoustic speed.
@@ -59,7 +58,7 @@ class Csma extends UnetAgent
           setNextState(State.SENSING)
         }
       }
-      println(myAddr+" BACKOFF")
+
       onEvent(Event.RX_CTRL) {
         backoff = controlMsgDuration
         reenterState()
@@ -105,7 +104,6 @@ class Csma extends UnetAgent
 
           else if (retryCount < MAX_RETRY_COUNT) {
             retryCount++
-            println(myAddr+" SLOTS: "+retryCount)
             Message msg = queue.peek()
             // in ms
             backoff = AgentLocalRandom.current().nextExp(targetLoad/msg.duration)*1000
@@ -116,6 +114,7 @@ class Csma extends UnetAgent
         else {  // Send Ntf
           ReservationReq msg = queue.poll()
           retryCount = 0
+          phy << new ClearReq()
           rxDisable()
           sendReservationStatusNtf(msg, ReservationStatus.START)
           after(msg.duration) {
@@ -132,7 +131,6 @@ class Csma extends UnetAgent
   void setup()
   {
     register Services.MAC
-    register Services.ROUTING
   }
 
   @Override
@@ -187,12 +185,6 @@ class Csma extends UnetAgent
         fsm.trigger(msg.to == myAddr ? Event.RX_DATA : Event.SNOOP_DATA)
       }
     }
-
-    if (msg instanceof RouteDiscoveryNtf && msg.reliability == true)  // A DATA transfer is about to start. Extend the backoff.
-    {
-      println("HHHHHHHHHHHHHHHHHHHH")
-      fsm.trigger(msg.to == myAddr ? Event.RX_DATA : Event.SNOOP_DATA)
-    }
   }
 
   private void rxDisable()
@@ -223,6 +215,7 @@ class Csma extends UnetAgent
     send new ReservationStatusNtf(recipient: msg.sender, requestID: msg.msgID, to: msg.to, from: myAddr, status: status)
   }
 
+  // Parameters to be received from the simulation file.
   int controlMsgDuration
   int dataMsgDuration
   double targetLoad

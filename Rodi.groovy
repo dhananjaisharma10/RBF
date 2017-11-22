@@ -69,14 +69,14 @@ class Rodi extends UnetAgent
     private final static int RREP = 0x02
     private final static int RIDZ = 0
 
-    private final static int MAX_TRANSMISSIONS  = 2     // 1 + re-transmissions
-    private final static int MAX_FATAL_ATTEMPTS = 2
+    private final static int MAX_TRANSMISSIONS  = 5     // 1 + re-transmissions
+    private final static int MAX_FATAL_ATTEMPTS = 2     // If the ACK reception fails twice for a route, delete it
 
     ArrayList<Rodi.RoutingInformation> myroutingTable  = new ArrayList<Rodi.RoutingInformation>()   //routing table
     ArrayList<Rodi.PacketHistory> mypacketHistoryTable = new ArrayList<Rodi.PacketHistory>()        //packet history table
     ArrayList<Rodi.Attempt> attempting                 = new ArrayList<Rodi.Attempt>()              //re-tx attempts
     ArrayList<Rodi.TxReserve> reservationTable         = new ArrayList<Rodi.TxReserve>()            //packets for MAC
-    ArrayList<Rodi.FatalAttempts> fatalAttemptTable    = new ArrayList<Rodi.FatalAttempts>()
+    ArrayList<Rodi.FatalAttempts> fatalAttemptTable    = new ArrayList<Rodi.FatalAttempts>()        //fatal ACK-reception history
 
     private final static int ROUTING_PROTOCOL   = Protocol.ROUTING      // To identify RREQ and RREP packets.
     private final static int DATA_PROTOCOL      = Protocol.DATA         // To identify DATA packets.
@@ -118,14 +118,6 @@ class Rodi extends UnetAgent
     // The route is DELETED.
     private void routeMaintenance(int destinationNode)
     {
-        /*for (int i = 0; i < myroutingTable.size(); i++)
-        {
-            if (myroutingTable.get(i).destinationAddress == destinationNode)
-            {
-                myroutingTable.remove(i)
-            }
-        }*/
-
         // No history in FATAL ATTEMPTS, add this incident.
         if (fatalAttemptTable.size() == 0)
         {
@@ -340,13 +332,6 @@ class Rodi extends UnetAgent
     @Override
     void processMessage(Message msg)
     {
-        if (msg instanceof TxFrameNtf)
-        {
-            if (msg.type == Physical.CONTROL)
-            {
-                println("CTRLPKT")
-            }
-        }
         // Reservation Status Notification is received from the MAC service.
         // Using requestID of the notification, the corresponding Reservation Request is extracted from the Reservation Table.
         if (msg instanceof ReservationStatusNtf)
@@ -401,7 +386,6 @@ class Rodi extends UnetAgent
 
             if (myAddr == od)       // 1) The final destination for the DATA packet.
             {
-                println(myAddr+" DARA "+os)
                 for (int i = 0; i < myroutingTable.size(); i++)
                 {
                     if (myroutingTable.get(i).destinationAddress == os)

@@ -32,14 +32,13 @@ channel.detectionRange     = 200.m                     // Twice that of the max 
 ///////////////////////////////////////////////////////////////////////////////
 // simulation settings
 
-def loadRange = [0.1, 1.5, 0.1]
 def T = 15.minutes
 
 def nodes = 1..5
-def dimension = Math.cbrt(125000*nodes.size())//50*Math.sqrt(nodes.size())
+def dimension = Math.cbrt(125000*nodes.size())
 
 ///////////////////////////////////////////////////////////////////////////////
-// distibute nodes randomly
+// generate random network geometry
 def nodeLocation = [:]
 nodes.each { myAddr ->
   nodeLocation[myAddr] = [rnd(0.m, dimension.m), rnd(0.m, dimension.m), rnd(0.m, -dimension.m)]
@@ -82,7 +81,7 @@ out.text = ''
       if(myAddr == 1)
       {
         def myNode = node("${myAddr}", address: myAddr, location: nodeLocation[myAddr], shell: true, stack: {container ->   
-          container.add 'aodv', routingAgent
+          container.add 'rodi', routingAgent
           container.add 'mac', macAgent
           })
       }
@@ -90,7 +89,7 @@ out.text = ''
       else
       {
         def myNode = node("${myAddr}", address: myAddr, location: nodeLocation[myAddr], stack: {container ->   
-          container.add 'aodv', routingAgent
+          container.add 'rodi', routingAgent
           container.add 'mac', macAgent
           })
       }
@@ -115,5 +114,5 @@ out.text = ''
 
   // save to file
   out << "${trace.offeredLoad},${trace.throughput}\n"
-
+  
 //} // for

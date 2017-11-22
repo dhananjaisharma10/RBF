@@ -89,9 +89,7 @@ class LoadGenerator extends UnetAgent
             rxDisable()
             def bytes = dataMsg.encode([source: myAddr, destination: msg.to, dataPktId: ++packetsent])
             phy << new TxFrameReq(to: msg.nextHop, type: Physical.DATA, protocol: Protocol.DATA, data: bytes)
-
-            println(myAddr+" SADA at "+currentTimeMillis())
-
+            
             // Enable receiver after 417 ms (dataMsgDuration at 2400 bps).
             add new WakerBehavior(417, {rxEnable()})
 
@@ -104,8 +102,6 @@ class LoadGenerator extends UnetAgent
             {
                 if (dataPktList.contains(packetsent))
                 {
-                    println("PACKET NOT DELIVERED")
-
                     RouteDiscoveryNtf ntf = new RouteDiscoveryNtf(
                         recipient:   msg.sender,
                         to:          msg.to, 
@@ -116,14 +112,6 @@ class LoadGenerator extends UnetAgent
                 })
         }
 
-        if (msg instanceof TxFrameNtf)
-        {
-            if (msg.type == Physical.DATA)
-            {
-                println("DATAPKT")
-            }
-        }
-
         // ACK packets.
         if (msg instanceof RxFrameNtf && msg.protocol == Protocol.USER)
         {
@@ -132,7 +120,6 @@ class LoadGenerator extends UnetAgent
 
             if (myAddr == os)       // I am the OS.
             {
-                println(myAddr+" ACK RECEIVED for "+info.dataPktId)
                 // remove packet id from the data packet list.
                 for (int i = 0; i < dataPktList.size(); i++) {if (dataPktList.get(i) == info.dataPktId) {dataPktList.remove(i)}}
             }
