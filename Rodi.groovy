@@ -6,7 +6,7 @@ import org.arl.unet.mac.*
 import org.arl.unet.nodeinfo.*
 
 /**
- * The class implements the Routing Protocol by Rahman et al.
+ * The class implements a Routing Protocol similar to the below reference:
  *
  * Reference:
  * R. H. Rahman, C. Benson, and M. Frater, "Routing protocols for underwater ad hoc networks," IEEE Oceans, 2012.
